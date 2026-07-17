@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, Component } from "react";
 import { X, Plus, Trash2, ShieldCheck, ChevronLeft, User, LogOut, Phone, Pencil } from "lucide-react";
 import {
   doc,
@@ -125,6 +125,28 @@ function weeklyOccurrenceDates(startDateStr, endDateStr) {
     d = addDays(d, 7);
   }
   return dates;
+}
+
+class ErrorBoundary extends Component {
+  constructor(props) {
+    super(props);
+    this.state = { error: null };
+  }
+  static getDerivedStateFromError(error) {
+    return { error };
+  }
+  render() {
+    if (this.state.error) {
+      return (
+        <div className="rounded-xl p-4 text-sm" style={{ background: COLORS.surface, border: `1px solid ${COLORS.full}`, color: COLORS.fullText }}>
+          <p className="font-bold mb-1">קרתה שגיאה בהצגת המסך הזה</p>
+          <p className="text-xs mb-2" style={{ color: COLORS.textMuted }}>שלח צילום מסך של ההודעה הבאה:</p>
+          <p className="mono text-xs whitespace-pre-wrap" style={{ direction: "ltr", textAlign: "left" }}>{String(this.state.error && this.state.error.message)}</p>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
 }
 
 export default function App() {
@@ -398,27 +420,29 @@ export default function App() {
       <TopTabs view={view} setView={setView} isAdmin={isAdmin} requestAdmin={requestAdmin} />
 
       <main className="max-w-md mx-auto px-4 pb-24 pt-4">
-        {view === "calendar" && (
-          <>
-            <CalendarNav mode={calendarMode} setMode={setCalendarMode} currentDate={currentDate} setCurrentDate={setCurrentDate} />
-            <CalendarView
-              mode={calendarMode}
-              currentDate={currentDate}
-              setCurrentDate={setCurrentDate}
-              setMode={setCalendarMode}
-              data={data}
-              myName={myName}
-              onSelect={(shift) => setSelectedShift({ ...shift, _registered: data.registrations[shift.id] || [] })}
-            />
-          </>
-        )}
-        {view === "mine" && (
-          <MyShiftsView data={data} myName={myName} onSelect={(shift) => setSelectedShift({ ...shift, _registered: data.registrations[shift.id] || [] })} />
-        )}
-        {view === "info" && <GuidelinesView info={data.info} onSave={updateInfo} isAdmin={isAdmin} requestAdmin={requestAdmin} />}
-        {view === "settings" && (
-          <SettingsView templates={data.templates} onAdd={addTemplate} onDelete={deleteTemplate} onDone={() => setView("calendar")} />
-        )}
+        <ErrorBoundary key={view}>
+          {view === "calendar" && (
+            <>
+              <CalendarNav mode={calendarMode} setMode={setCalendarMode} currentDate={currentDate} setCurrentDate={setCurrentDate} />
+              <CalendarView
+                mode={calendarMode}
+                currentDate={currentDate}
+                setCurrentDate={setCurrentDate}
+                setMode={setCalendarMode}
+                data={data}
+                myName={myName}
+                onSelect={(shift) => setSelectedShift({ ...shift, _registered: data.registrations[shift.id] || [] })}
+              />
+            </>
+          )}
+          {view === "mine" && (
+            <MyShiftsView data={data} myName={myName} onSelect={(shift) => setSelectedShift({ ...shift, _registered: data.registrations[shift.id] || [] })} />
+          )}
+          {view === "info" && <GuidelinesView info={data.info} onSave={updateInfo} isAdmin={isAdmin} requestAdmin={requestAdmin} />}
+          {view === "settings" && (
+            <SettingsView templates={data.templates} onAdd={addTemplate} onDelete={deleteTemplate} onDone={() => setView("calendar")} />
+          )}
+        </ErrorBoundary>
       </main>
 
       {selectedShift && (
@@ -952,7 +976,8 @@ function ShiftModal({ shift, myName, onClose, onRegister, onRegisterRecurring, o
   );
 }
 
-function SettingsView({ templates, onAdd, onDelete, onDone }) {
+function SettingsView({ templates: rawTemplates, onAdd, onDelete, onDone }) {
+  const templates = Array.isArray(rawTemplates) ? rawTemplates : [];
   const [showForm, setShowForm] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [form, setForm] = useState({ label: "", dayOfWeek: 0, start: "20:00", end: "06:00", capacity: 2 });
