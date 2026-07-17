@@ -395,6 +395,15 @@ export default function App() {
     }
   };
 
+  const resetRegistrations = async () => {
+    try {
+      await withTimeout(updateDoc(STATE_REF, { registrations: {} }));
+      showToast("כל ההרשמות אופסו");
+    } catch (e) {
+      showToast(e.message === "timeout" ? "החיבור לוקח יותר מדי זמן - נסה שוב" : "שגיאה בשמירה - נסה שוב");
+    }
+  };
+
   if (loading || pendingCreds === undefined) {
     return (
       <div style={{ background: COLORS.bg, color: COLORS.textMuted }} className="min-h-screen flex items-center justify-center">
@@ -440,7 +449,7 @@ export default function App() {
           )}
           {view === "info" && <GuidelinesView info={data.info} onSave={updateInfo} isAdmin={isAdmin} requestAdmin={requestAdmin} />}
           {view === "settings" && (
-            <SettingsView templates={data.templates} onAdd={addTemplate} onDelete={deleteTemplate} onDone={() => setView("calendar")} />
+            <SettingsView templates={data.templates} onAdd={addTemplate} onDelete={deleteTemplate} onDone={() => setView("calendar")} onResetRegistrations={resetRegistrations} />
           )}
         </ErrorBoundary>
       </main>
@@ -976,9 +985,11 @@ function ShiftModal({ shift, myName, onClose, onRegister, onRegisterRecurring, o
   );
 }
 
-function SettingsView({ templates: rawTemplates, onAdd, onDelete, onDone }) {
+function SettingsView({ templates: rawTemplates, onAdd, onDelete, onDone, onResetRegistrations }) {
   const templates = Array.isArray(rawTemplates) ? rawTemplates : [];
   const [showForm, setShowForm] = useState(false);
+  const [confirmingReset, setConfirmingReset] = useState(false);
+  const [resetting, setResetting] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [form, setForm] = useState({ label: "", dayOfWeek: 0, start: "20:00", end: "06:00", capacity: 2 });
 
@@ -992,6 +1003,16 @@ function SettingsView({ templates: rawTemplates, onAdd, onDelete, onDone }) {
       onDone();
     } finally {
       setSubmitting(false);
+    }
+  };
+
+  const handleReset = async () => {
+    setResetting(true);
+    try {
+      await onResetRegistrations();
+    } finally {
+      setResetting(false);
+      setConfirmingReset(false);
     }
   };
 
@@ -1054,6 +1075,43 @@ function SettingsView({ templates: rawTemplates, onAdd, onDelete, onDone }) {
           ))}
         </div>
       )}
+
+      <div className="mt-8 pt-4" style={{ borderTop: `1px solid ${COLORS.border}` }}>
+        <h3 className="text-xs font-bold mb-2" style={{ color: COLORS.fullText }}>איפוס נתוני הרשמה</h3>
+        <p className="text-xs mb-3" style={{ color: COLORS.textMuted }}>
+          מוחק את כל ההרשמות של כולם למשמרות (לא מוחק את הגדרות המשמרות עצמן). פעולה בלתי הפיכה.
+        </p>
+        {!confirmingReset ? (
+          <button
+            onClick={() => setConfirmingReset(true)}
+            className="text-xs font-bold px-3 py-2 rounded-lg"
+            style={{ color: COLORS.fullText, background: COLORS.surface, border: `1px solid ${COLORS.full}` }}
+          >
+            אפס את כל ההרשמות
+          </button>
+        ) : (
+          <div className="rounded-lg p-3 space-y-2" style={{ background: `${COLORS.full}22`, border: `1px solid ${COLORS.full}` }}>
+            <p className="text-xs font-bold" style={{ color: COLORS.fullText }}>בטוח? זה ימחק את ההרשמות של כולם ולא ניתן לבטל.</p>
+            <div className="flex gap-2">
+              <button
+                onClick={() => setConfirmingReset(false)}
+                className="flex-1 rounded-lg py-2 text-xs font-bold"
+                style={{ background: COLORS.surface, color: COLORS.textMuted, border: `1px solid ${COLORS.border}` }}
+              >
+                ביטול
+              </button>
+              <button
+                onClick={handleReset}
+                disabled={resetting}
+                className="flex-1 rounded-lg py-2 text-xs font-bold disabled:opacity-60"
+                style={{ background: COLORS.full, color: COLORS.fullText }}
+              >
+                {resetting ? "מאפס..." : "כן, אפס הכל"}
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
