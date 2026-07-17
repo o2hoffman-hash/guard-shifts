@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, Component } from "react";
-import { X, Plus, Trash2, ShieldCheck, ChevronLeft, User, LogOut, Phone, Pencil } from "lucide-react";
+import { X, Plus, Trash2, ShieldCheck, ChevronLeft, User, LogOut, Phone, Pencil, RefreshCw } from "lucide-react";
 import {
   doc,
   onSnapshot,
@@ -169,12 +169,23 @@ export default function App() {
   const [adminModalOpen, setAdminModalOpen] = useState(false);
   const [adminError, setAdminError] = useState(null);
   const [adminCallback, setAdminCallback] = useState(null);
+  const [loadError, setLoadError] = useState(null);
+  const [refreshKey, setRefreshKey] = useState(0);
 
-  // subscribe to shared Firestore state in realtime
+  // subscribe to shared Firestore state in realtime.
+  // Re-runs when refreshKey changes, which happens automatically when the
+  // tab regains focus/visibility or the network comes back online - this
+  // recovers from a realtime listener that silently died on a flaky
+  // network, without requiring the user to reload the page.
   useEffect(() => {
+    const loadTimeout = setTimeout(() => {
+      setLoadError("הטעינה לוקחת יותר מדי זמן - כנראה בעיית רשת. בדוק את החיבור לאינטרנט ונסה שוב.");
+    }, 15000);
     const unsub = onSnapshot(
       STATE_REF,
       (snap) => {
+        clearTimeout(loadTimeout);
+        setLoadError(null);
         if (snap.exists()) {
           const d = snap.data();
           setData({
@@ -190,12 +201,31 @@ export default function App() {
         setLoading(false);
       },
       (err) => {
+        clearTimeout(loadTimeout);
         console.error(err);
-        showToast("שגיאת חיבור למסד הנתונים");
+        setLoadError("שגיאת חיבור למסד הנתונים - בדוק את החיבור לאינטרנט ונסה שוב.");
         setLoading(false);
       }
     );
-    return () => unsub();
+    return () => {
+      clearTimeout(loadTimeout);
+      unsub();
+    };
+  }, [refreshKey]);
+
+  // auto-recover: re-subscribe when the tab becomes visible again or the
+  // network reconnects, in case the realtime channel died silently
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState === "visible") setRefreshKey((k) => k + 1);
+    };
+    const onOnline = () => setRefreshKey((k) => k + 1);
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("online", onOnline);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("online", onOnline);
+    };
   }, []);
 
   // load locally-remembered login (this device only)
@@ -317,24 +347,26 @@ export default function App() {
       showToast("המשמרת התמלאה");
       return;
     }
+    const prevData = data;
+    setData({ ...data, registrations: { ...data.registrations, [shift.id]: [...list, myName] } });
     try {
       await withTimeout(updateDoc(STATE_REF, { [`registrations.${shift.id}`]: arrayUnion(myName) }));
-      setSelectedShift((prev) => (prev ? { ...prev, _registered: [...list, myName] } : prev));
-      showToast("נרשמת למשמרת");
     } catch (e) {
-      showToast(e.message === "timeout" ? "החיבור לוקח יותר מדי זמן - נסה שוב" : "שגיאה בשמירה - נסה שוב");
+      setData(prevData);
+      showToast(e.message === "timeout" ? "החיבור לוקח יותר מדי זמן - ההרשמה לא נשמרה, נסה שוב" : "שגיאה בשמירה - נסה שוב");
     }
   };
 
   const unregister = async (shift) => {
     if (!myName) return;
     const list = data.registrations[shift.id] || [];
+    const prevData = data;
+    setData({ ...data, registrations: { ...data.registrations, [shift.id]: list.filter((n) => n !== myName) } });
     try {
       await withTimeout(updateDoc(STATE_REF, { [`registrations.${shift.id}`]: arrayRemove(myName) }));
-      setSelectedShift((prev) => (prev ? { ...prev, _registered: list.filter((n) => n !== myName) } : prev));
-      showToast("ההרשמה בוטלה");
     } catch (e) {
-      showToast(e.message === "timeout" ? "החיבור לוקח יותר מדי זמן - נסה שוב" : "שגיאה בשמירה - נסה שוב");
+      setData(prevData);
+      showToast(e.message === "timeout" ? "החיבור לוקח יותר מדי זמן - הביטול לא נשמר, נסה שוב" : "שגיאה בשמירה - נסה שוב");
     }
   };
 
@@ -406,8 +438,21 @@ export default function App() {
 
   if (loading || pendingCreds === undefined) {
     return (
-      <div style={{ background: COLORS.bg, color: COLORS.textMuted }} className="min-h-screen flex items-center justify-center">
-        טוען...
+      <div style={{ background: COLORS.bg, color: COLORS.textMuted }} className="min-h-screen flex items-center justify-center p-6">
+        {loadError ? (
+          <div className="text-center max-w-xs">
+            <p className="text-sm mb-4" style={{ color: COLORS.fullText }}>{loadError}</p>
+            <button
+              onClick={() => window.location.reload()}
+              className="rounded-xl px-5 py-2.5 font-bold text-sm"
+              style={{ background: COLORS.accent, color: COLORS.accentText }}
+            >
+              נסה שוב
+            </button>
+          </div>
+        ) : (
+          "טוען..."
+        )}
       </div>
     );
   }
@@ -417,15 +462,14 @@ export default function App() {
   }
 
   return (
-    <div dir="rtl" style={{ background: COLORS.bg, color: COLORS.textPrimary, fontFamily: "'Rubik', system-ui, sans-serif" }} className="min-h-screen">
+    <div dir="rtl" style={{ background: COLORS.bg, color: COLORS.textPrimary, fontFamily: "system-ui, -apple-system, 'Segoe UI', Arial, sans-serif" }} className="min-h-screen">
       <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=Rubik:wght@400;500;700;800&family=JetBrains+Mono:wght@500;700&display=swap');
-        .mono { font-family: 'JetBrains Mono', monospace; }
+        .mono { font-family: ui-monospace, 'SF Mono', 'Cascadia Code', Consolas, monospace; }
         * { box-sizing: border-box; }
         body { margin: 0; }
       `}</style>
 
-      <Header myName={myName} onLogout={logout} />
+      <Header myName={myName} onLogout={logout} onRefresh={() => setRefreshKey((k) => k + 1)} />
       <TopTabs view={view} setView={setView} isAdmin={isAdmin} requestAdmin={requestAdmin} />
 
       <main className="max-w-md mx-auto px-4 pb-24 pt-4">
@@ -507,10 +551,10 @@ function AuthGate({ onSubmit, error }) {
   return (
     <div
       dir="rtl"
-      style={{ background: COLORS.bg, color: COLORS.textPrimary, fontFamily: "'Rubik', system-ui, sans-serif" }}
+      style={{ background: COLORS.bg, color: COLORS.textPrimary, fontFamily: "system-ui, -apple-system, 'Segoe UI', Arial, sans-serif" }}
       className="min-h-screen flex items-center justify-center p-4"
     >
-      <style>{`@import url('https://fonts.googleapis.com/css2?family=Rubik:wght@400;500;700;800&family=JetBrains+Mono:wght@500;700&display=swap'); .mono { font-family: 'JetBrains Mono', monospace; }`}</style>
+      <style>{`.mono { font-family: ui-monospace, 'SF Mono', 'Cascadia Code', Consolas, monospace; }`}</style>
       <div className="w-full max-w-sm rounded-2xl p-6" style={{ background: COLORS.surface, border: `1px solid ${COLORS.border}` }}>
         <div className="flex items-center gap-2 mb-1" style={{ color: COLORS.accentText }}>
           <ShieldCheck size={22} />
@@ -558,7 +602,7 @@ function AuthGate({ onSubmit, error }) {
   );
 }
 
-function Header({ myName, onLogout }) {
+function Header({ myName, onLogout, onRefresh }) {
   return (
     <header className="sticky top-0 z-20 backdrop-blur" style={{ background: "rgba(241,245,249,0.92)", borderBottom: `1px solid ${COLORS.border}` }}>
       <div className="max-w-md mx-auto px-4 pt-4 pb-3 flex items-center justify-between">
@@ -567,6 +611,9 @@ function Header({ myName, onLogout }) {
           <span className="font-extrabold text-base">משמרות שמירה</span>
         </div>
         <div className="flex items-center gap-2 text-xs" style={{ color: COLORS.textMuted }}>
+          <button onClick={onRefresh} className="flex items-center gap-1" style={{ color: COLORS.accentText }} aria-label="רענון">
+            <RefreshCw size={13} />
+          </button>
           <User size={13} />
           <span>{myName}</span>
           <button onClick={onLogout} className="flex items-center gap-1 underline underline-offset-2" style={{ color: COLORS.accentText }}>
@@ -868,21 +915,13 @@ function ShiftModal({ shift, myName, onClose, onRegister, onRegisterRecurring, o
   const dateObj = new Date(shift.date + "T00:00:00");
   const past = isPastDate(dateObj);
 
-  const handleRegister = async () => {
-    setSubmitting(true);
-    try {
-      await onRegister(shift);
-    } finally {
-      setSubmitting(false);
-    }
+  const handleRegister = () => {
+    onRegister(shift);
+    onClose();
   };
-  const handleUnregister = async () => {
-    setSubmitting(true);
-    try {
-      await onUnregister(shift);
-    } finally {
-      setSubmitting(false);
-    }
+  const handleUnregister = () => {
+    onUnregister(shift);
+    onClose();
   };
   const handleRecurring = async () => {
     setSubmitting(true);
