@@ -157,6 +157,7 @@ export default function App() {
   const [authError, setAuthError] = useState(null);
   const [view, setView] = useState("calendar");
   const [calendarMode, setCalendarMode] = useState("month");
+  const [activeOnly, setActiveOnly] = useState(false);
   const [currentDate, setCurrentDate] = useState(() => {
     const t = new Date();
     t.setHours(0, 0, 0, 0);
@@ -184,8 +185,8 @@ export default function App() {
     const unsub = onSnapshot(
       STATE_REF,
       (snap) => {
-        clearTimeout(loadTimeout);
         if (snap.exists()) {
+          clearTimeout(loadTimeout);
           setLoadError(null);
           const d = snap.data();
           setData({
@@ -207,6 +208,7 @@ export default function App() {
           // real and writing empty defaults would overwrite genuine data
           // the moment the connection recovers. This was the bug behind
           // shifts disappearing on a second login - never repeat it.
+          clearTimeout(loadTimeout);
           setLoadError(null);
           const emptyDefaults = { templates: [], registrations: {}, users: {}, info: DEFAULT_INFO, adminCode: "" };
           setData(emptyDefaults);
@@ -214,8 +216,12 @@ export default function App() {
           setLoading(false);
         }
         // else: fromCache && !exists -> unknown state, not yet confirmed by
-        // the server. Deliberately do nothing and keep waiting - loading
-        // stays true, no data is touched, nothing is written.
+        // the server. This is the NORMAL first event for almost every fresh
+        // session (empty local cache). Deliberately do nothing and keep
+        // waiting for a decisive answer - crucially, the loadTimeout is
+        // NOT cleared here, so if a real answer never comes, the 15s
+        // safety net still fires and shows the retry screen instead of
+        // hanging forever with no feedback.
       },
       (err) => {
         clearTimeout(loadTimeout);
@@ -525,7 +531,7 @@ export default function App() {
         <ErrorBoundary key={view}>
           {view === "calendar" && (
             <>
-              <CalendarNav mode={calendarMode} setMode={setCalendarMode} currentDate={currentDate} setCurrentDate={setCurrentDate} />
+              <CalendarNav mode={calendarMode} setMode={setCalendarMode} currentDate={currentDate} setCurrentDate={setCurrentDate} activeOnly={activeOnly} setActiveOnly={setActiveOnly} />
               <CalendarView
                 mode={calendarMode}
                 currentDate={currentDate}
@@ -533,6 +539,7 @@ export default function App() {
                 setMode={setCalendarMode}
                 data={data}
                 myName={myName}
+                activeOnly={activeOnly}
                 onSelect={(shift) => setSelectedShift({ ...shift, _registered: data.registrations[shift.id] || [] })}
               />
             </>
@@ -706,7 +713,7 @@ function TopTabs({ view, setView, isAdmin, requestAdmin }) {
   );
 }
 
-function CalendarNav({ mode, setMode, currentDate, setCurrentDate }) {
+function CalendarNav({ mode, setMode, currentDate, setCurrentDate, activeOnly, setActiveOnly }) {
   const modes = [
     { id: "month", label: "חודש" },
     { id: "week", label: "שבוע" },
@@ -751,6 +758,24 @@ function CalendarNav({ mode, setMode, currentDate, setCurrentDate }) {
           </button>
         ))}
       </div>
+      {mode !== "month" && (
+        <div className="flex rounded-lg overflow-hidden mb-3" style={{ border: `1px solid ${COLORS.border}` }}>
+          <button
+            onClick={() => setActiveOnly(false)}
+            className="flex-1 text-[11px] font-bold py-1.5"
+            style={{ background: !activeOnly ? COLORS.surfaceRaised : COLORS.surface, color: !activeOnly ? COLORS.textPrimary : COLORS.textMuted }}
+          >
+            כל המשמרות
+          </button>
+          <button
+            onClick={() => setActiveOnly(true)}
+            className="flex-1 text-[11px] font-bold py-1.5"
+            style={{ background: activeOnly ? COLORS.surfaceRaised : COLORS.surface, color: activeOnly ? COLORS.textPrimary : COLORS.textMuted }}
+          >
+            רק עם נרשמים
+          </button>
+        </div>
+      )}
       {mode === "list" ? (
         <div className="text-center text-sm font-bold" style={{ color: COLORS.textMuted }}>{label}</div>
       ) : (
@@ -816,7 +841,11 @@ function ShiftBlock({ shift, registered, onSelect }) {
   );
 }
 
-function DayGroup({ date, shifts, data, onSelect }) {
+function filterActiveShifts(shifts, registrations) {
+  return shifts.filter((s) => (registrations[s.id] || []).length > 0);
+}
+
+function DayGroup({ date, shifts, data, onSelect, emptyMessage }) {
   return (
     <div>
       <div className="flex items-center gap-2 mb-2 px-1">
@@ -829,7 +858,7 @@ function DayGroup({ date, shifts, data, onSelect }) {
         <span className="text-xs mono" style={{ color: COLORS.textMuted }}>{fmtDateLabel(date)}</span>
       </div>
       {shifts.length === 0 ? (
-        <p className="text-xs px-1" style={{ color: COLORS.textMuted }}>אין משמרות ביום זה</p>
+        <p className="text-xs px-1" style={{ color: COLORS.textMuted }}>{emptyMessage || "אין משמרות ביום זה"}</p>
       ) : (
         <div className="space-y-2">
           {shifts.map((shift) => (
@@ -878,7 +907,7 @@ function MonthGrid({ currentDate, data, onPickDay }) {
   );
 }
 
-function CalendarView({ mode, currentDate, setCurrentDate, setMode, data, myName, onSelect }) {
+function CalendarView({ mode, currentDate, setCurrentDate, setMode, data, myName, activeOnly, onSelect }) {
   if (data.templates.length === 0) {
     return (
       <div className="text-center py-16" style={{ color: COLORS.textMuted }}>
@@ -889,8 +918,11 @@ function CalendarView({ mode, currentDate, setCurrentDate, setMode, data, myName
     );
   }
 
+  const applyFilter = (shifts) => (activeOnly ? filterActiveShifts(shifts, data.registrations) : shifts);
+  const emptyMsg = activeOnly ? "אין משמרות עם נרשמים ביום זה" : undefined;
+
   if (mode === "day") {
-    return <DayGroup date={currentDate} shifts={shiftsForDate(data.templates, currentDate)} data={data} onSelect={onSelect} />;
+    return <DayGroup date={currentDate} shifts={applyFilter(shiftsForDate(data.templates, currentDate))} data={data} onSelect={onSelect} emptyMessage={emptyMsg} />;
   }
   if (mode === "week") {
     const ws = startOfWeek(currentDate);
@@ -898,14 +930,22 @@ function CalendarView({ mode, currentDate, setCurrentDate, setMode, data, myName
     return (
       <div className="space-y-5">
         {days.map((date) => (
-          <DayGroup key={fmtDate(date)} date={date} shifts={shiftsForDate(data.templates, date)} data={data} onSelect={onSelect} />
+          <DayGroup key={fmtDate(date)} date={date} shifts={applyFilter(shiftsForDate(data.templates, date))} data={data} onSelect={onSelect} emptyMessage={emptyMsg} />
         ))}
       </div>
     );
   }
   if (mode === "list") {
-    const days = generateUpcoming(data.templates, 30);
-    if (days.length === 0) return <p className="text-sm text-center py-8" style={{ color: COLORS.textMuted }}>אין משמרות קרובות</p>;
+    const days = generateUpcoming(data.templates, 30)
+      .map(({ date, shifts }) => ({ date, shifts: applyFilter(shifts) }))
+      .filter(({ shifts }) => shifts.length > 0);
+    if (days.length === 0) {
+      return (
+        <p className="text-sm text-center py-8" style={{ color: COLORS.textMuted }}>
+          {activeOnly ? "אין משמרות עם נרשמים בקרוב" : "אין משמרות קרובות"}
+        </p>
+      );
+    }
     return (
       <div className="space-y-5">
         {days.map(({ date, shifts }) => (
