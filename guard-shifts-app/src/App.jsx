@@ -185,8 +185,8 @@ export default function App() {
       STATE_REF,
       (snap) => {
         clearTimeout(loadTimeout);
-        setLoadError(null);
         if (snap.exists()) {
+          setLoadError(null);
           const d = snap.data();
           setData({
             templates: d.templates || [],
@@ -195,10 +195,27 @@ export default function App() {
             info: { ...DEFAULT_INFO, ...(d.info || {}) },
             adminCode: d.adminCode || "",
           });
-        } else {
-          setDoc(STATE_REF, { templates: [], registrations: {}, users: {}, info: DEFAULT_INFO, adminCode: "" });
+          setLoading(false);
+        } else if (!snap.metadata.fromCache) {
+          // The server itself confirmed there is truly no document yet
+          // (this should only ever happen once, the very first time the
+          // app is ever used). Only now is it safe to create it.
+          //
+          // Critical: if this snapshot came fromCache instead, it does NOT
+          // mean "no document exists" - it means "we haven't heard from the
+          // server yet" (e.g. slow/unstable connection). Treating that as
+          // real and writing empty defaults would overwrite genuine data
+          // the moment the connection recovers. This was the bug behind
+          // shifts disappearing on a second login - never repeat it.
+          setLoadError(null);
+          const emptyDefaults = { templates: [], registrations: {}, users: {}, info: DEFAULT_INFO, adminCode: "" };
+          setData(emptyDefaults);
+          setDoc(STATE_REF, emptyDefaults).catch((e) => console.error("bootstrap write failed", e));
+          setLoading(false);
         }
-        setLoading(false);
+        // else: fromCache && !exists -> unknown state, not yet confirmed by
+        // the server. Deliberately do nothing and keep waiting - loading
+        // stays true, no data is touched, nothing is written.
       },
       (err) => {
         clearTimeout(loadTimeout);
@@ -276,19 +293,25 @@ export default function App() {
         setAuthError("הקוד שגוי עבור השם הזה");
         return;
       }
-    } else {
+      // returning user, correct pin - nothing to write, log in instantly
       try {
-        await withTimeout(updateDoc(STATE_REF, { [`users.${name}`]: pin }));
-      } catch (e) {
-        setAuthError(e.message === "timeout" ? "החיבור לוקח יותר מדי זמן - נסה שוב" : "שגיאת חיבור - נסה שוב");
-        return;
-      }
+        localStorage.setItem(AUTH_KEY, JSON.stringify({ name, pin }));
+      } catch (e) {}
+      setAuthError(null);
+      setMyName(name);
+      return;
     }
+    // new user - log in immediately, persist to the server in the background
     try {
       localStorage.setItem(AUTH_KEY, JSON.stringify({ name, pin }));
     } catch (e) {}
     setAuthError(null);
     setMyName(name);
+    try {
+      await withTimeout(updateDoc(STATE_REF, { [`users.${name}`]: pin }));
+    } catch (e) {
+      showToast("שים לב: הרישום שלך לא נשמר בשרת (בעיית רשת) - ייתכן שתתבקש להזין קוד שוב בכניסה הבאה");
+    }
   };
 
   const logout = () => {
@@ -314,18 +337,15 @@ export default function App() {
       setAdminError("נא להזין קוד תקין");
       return;
     }
-    if (!data.adminCode) {
-      try {
-        await withTimeout(updateDoc(STATE_REF, { adminCode: code }));
-      } catch (e) {
-        setAdminError(e.message === "timeout" ? "החיבור לוקח יותר מדי זמן - נסה שוב" : "שגיאת חיבור - נסה שוב");
-        return;
-      }
-      showToast("קוד ניהול הוגדר - שמור אותו!");
-    } else if (data.adminCode !== code) {
+    if (data.adminCode && data.adminCode !== code) {
       setAdminError("קוד שגוי");
       return;
     }
+    const isBootstrap = !data.adminCode;
+    const prevData = data;
+    // unlock immediately - no reason to make the user wait on a network
+    // round trip just to flip a local permission flag
+    if (isBootstrap) setData({ ...data, adminCode: code });
     try {
       localStorage.setItem(ADMIN_KEY, code);
     } catch (e) {}
@@ -335,6 +355,16 @@ export default function App() {
     if (adminCallback) {
       adminCallback();
       setAdminCallback(null);
+    }
+    if (isBootstrap) {
+      try {
+        await withTimeout(updateDoc(STATE_REF, { adminCode: code }));
+        showToast("קוד ניהול הוגדר - שמור אותו!");
+      } catch (e) {
+        setData(prevData);
+        setIsAdmin(false);
+        showToast("שגיאה בשמירת קוד הניהול - נסה שוב");
+      }
     }
   };
 
@@ -373,64 +403,81 @@ export default function App() {
     if (!myName || !endDateStr) return;
     const occurrences = weeklyOccurrenceDates(shift.date, endDateStr);
     const updatePayload = {};
+    const nextRegs = { ...data.registrations };
     let added = 0;
     let skipped = 0;
     occurrences.forEach((d) => {
       const id = `${shift.templateId}_${fmtDate(d)}`;
-      const list = data.registrations[id] || [];
+      const list = nextRegs[id] || [];
       if (list.includes(myName)) return;
       if (list.length >= shift.capacity) {
         skipped++;
         return;
       }
+      nextRegs[id] = [...list, myName];
       updatePayload[`registrations.${id}`] = arrayUnion(myName);
       added++;
     });
+    const prevData = data;
+    setData({ ...data, registrations: nextRegs });
+    showToast(
+      skipped > 0
+        ? `נרשמת ל-${added} משמרות (${skipped} היו מלאות ודולגו)`
+        : `נרשמת ל-${added} משמרות עד ${endDateStr.split("-").reverse().join("/")}`
+    );
     try {
       if (Object.keys(updatePayload).length > 0) {
         await withTimeout(updateDoc(STATE_REF, updatePayload));
       }
-      showToast(
-        skipped > 0
-          ? `נרשמת ל-${added} משמרות (${skipped} היו מלאות ודולגו)`
-          : `נרשמת ל-${added} משמרות עד ${endDateStr.split("-").reverse().join("/")}`
-      );
     } catch (e) {
-      showToast(e.message === "timeout" ? "החיבור לוקח יותר מדי זמן - נסה שוב" : "שגיאה בשמירה - נסה שוב");
+      setData(prevData);
+      showToast(e.message === "timeout" ? "החיבור לוקח יותר מדי זמן - ההרשמה לא נשמרה, נסה שוב" : "שגיאה בשמירה - נסה שוב");
     }
-    setSelectedShift(null);
   };
 
-  const addTemplate = async (tpl) => {
+  const addTemplates = async (baseTpl, days) => {
+    const newTemplates = days.map((d) => ({ ...baseTpl, dayOfWeek: d, id: uid() }));
+    const prevData = data;
+    setData({ ...data, templates: [...data.templates, ...newTemplates] });
     try {
-      await withTimeout(updateDoc(STATE_REF, { templates: arrayUnion({ ...tpl, id: uid() }) }));
+      await withTimeout(updateDoc(STATE_REF, { templates: arrayUnion(...newTemplates) }));
     } catch (e) {
-      showToast(e.message === "timeout" ? "החיבור לוקח יותר מדי זמן - נסה שוב" : "שגיאה בשמירה - נסה שוב");
+      setData(prevData);
+      showToast(e.message === "timeout" ? "החיבור לוקח יותר מדי זמן - המשמרת לא נשמרה, נסה שוב" : "שגיאה בשמירה - נסה שוב");
     }
   };
 
   const deleteTemplate = async (id) => {
+    const prevData = data;
     const filtered = data.templates.filter((t) => t.id !== id);
+    setData({ ...data, templates: filtered });
     try {
       await withTimeout(updateDoc(STATE_REF, { templates: filtered }));
     } catch (e) {
-      showToast(e.message === "timeout" ? "החיבור לוקח יותר מדי זמן - נסה שוב" : "שגיאה בשמירה - נסה שוב");
+      setData(prevData);
+      showToast(e.message === "timeout" ? "החיבור לוקח יותר מדי זמן - המחיקה לא נשמרה, נסה שוב" : "שגיאה בשמירה - נסה שוב");
     }
   };
 
   const updateInfo = async (nextInfo) => {
+    const prevData = data;
+    setData({ ...data, info: nextInfo });
     try {
       await withTimeout(updateDoc(STATE_REF, { info: nextInfo }));
     } catch (e) {
+      setData(prevData);
       showToast(e.message === "timeout" ? "החיבור לוקח יותר מדי זמן - נסה שוב" : "שגיאה בשמירה - נסה שוב");
     }
   };
 
   const resetRegistrations = async () => {
+    const prevData = data;
+    setData({ ...data, registrations: {} });
+    showToast("כל ההרשמות אופסו");
     try {
       await withTimeout(updateDoc(STATE_REF, { registrations: {} }));
-      showToast("כל ההרשמות אופסו");
     } catch (e) {
+      setData(prevData);
       showToast(e.message === "timeout" ? "החיבור לוקח יותר מדי זמן - נסה שוב" : "שגיאה בשמירה - נסה שוב");
     }
   };
@@ -495,7 +542,7 @@ export default function App() {
           )}
           {view === "info" && <GuidelinesView info={data.info} onSave={updateInfo} isAdmin={isAdmin} requestAdmin={requestAdmin} />}
           {view === "settings" && (
-            <SettingsView templates={data.templates} onAdd={addTemplate} onDelete={deleteTemplate} onDone={() => setView("calendar")} onResetRegistrations={resetRegistrations} />
+            <SettingsView templates={data.templates} onAdd={addTemplates} onDelete={deleteTemplate} onDone={() => setView("calendar")} onResetRegistrations={resetRegistrations} />
           )}
         </ErrorBoundary>
       </main>
@@ -539,15 +586,10 @@ export default function App() {
 function AuthGate({ onSubmit, error }) {
   const [name, setName] = useState("");
   const [pin, setPin] = useState("");
-  const [submitting, setSubmitting] = useState(false);
 
-  const handleSubmit = async () => {
-    setSubmitting(true);
-    try {
-      await onSubmit(name, pin);
-    } finally {
-      setSubmitting(false);
-    }
+  const handleSubmit = () => {
+    if (!name.trim() || pin.length < 4) return;
+    onSubmit(name, pin);
   };
 
   return (
@@ -569,6 +611,7 @@ function AuthGate({ onSubmit, error }) {
         <div className="space-y-3 mb-2">
           <input
             autoFocus
+            autoComplete="off"
             value={name}
             onChange={(e) => setName(e.target.value)}
             placeholder="שם מלא"
@@ -581,6 +624,7 @@ function AuthGate({ onSubmit, error }) {
             onKeyDown={(e) => e.key === "Enter" && handleSubmit()}
             placeholder="קוד אישי (4 ספרות)"
             inputMode="numeric"
+            autoComplete="off"
             maxLength={4}
             dir="ltr"
             className="w-full rounded-xl px-4 py-3 text-base outline-none text-center mono tracking-[0.5em]"
@@ -590,11 +634,11 @@ function AuthGate({ onSubmit, error }) {
         {error && <p className="text-xs mb-3" style={{ color: COLORS.fullText }}>{error}</p>}
         <button
           onClick={handleSubmit}
-          disabled={!name.trim() || pin.length < 4 || submitting}
+          disabled={!name.trim() || pin.length < 4}
           className="w-full rounded-xl py-3 font-bold text-base disabled:opacity-40"
           style={{ background: COLORS.accent, color: COLORS.accentText }}
         >
-          {submitting ? "מתחבר..." : "כניסה"}
+          כניסה
         </button>
         <p className="text-[11px] mt-3" style={{ color: COLORS.textMuted }}>
           שם חדש? הקוד שתבחר ישמש אותך גם בכניסות הבאות ומכל מכשיר.
@@ -909,7 +953,6 @@ function MyShiftsView({ data, myName, onSelect }) {
 function ShiftModal({ shift, myName, onClose, onRegister, onRegisterRecurring, onUnregister }) {
   const [showRecurring, setShowRecurring] = useState(false);
   const [recurEnd, setRecurEnd] = useState("");
-  const [submitting, setSubmitting] = useState(false);
   const registered = shift._registered || [];
   const taken = registered.length;
   const isFull = taken >= shift.capacity;
@@ -925,13 +968,9 @@ function ShiftModal({ shift, myName, onClose, onRegister, onRegisterRecurring, o
     onUnregister(shift);
     onClose();
   };
-  const handleRecurring = async () => {
-    setSubmitting(true);
-    try {
-      await onRegisterRecurring(shift, recurEnd);
-    } finally {
-      setSubmitting(false);
-    }
+  const handleRecurring = () => {
+    onRegisterRecurring(shift, recurEnd);
+    onClose();
   };
 
   return (
@@ -971,11 +1010,10 @@ function ShiftModal({ shift, myName, onClose, onRegister, onRegisterRecurring, o
         ) : iAmIn ? (
           <button
             onClick={handleUnregister}
-            disabled={submitting}
-            className="w-full rounded-xl py-3 font-bold text-sm disabled:opacity-60"
+            className="w-full rounded-xl py-3 font-bold text-sm"
             style={{ background: `${COLORS.full}55`, color: COLORS.fullText, border: `1px solid ${COLORS.full}` }}
           >
-            {submitting ? "מבטל..." : "בטל את ההרשמה שלי"}
+            בטל את ההרשמה שלי
           </button>
         ) : isFull ? (
           <button disabled className="w-full rounded-xl py-3 font-bold text-sm opacity-60" style={{ background: COLORS.surfaceRaised, color: COLORS.textMuted }}>
@@ -985,11 +1023,10 @@ function ShiftModal({ shift, myName, onClose, onRegister, onRegisterRecurring, o
           <div className="space-y-2">
             <button
               onClick={handleRegister}
-              disabled={submitting}
-              className="w-full rounded-xl py-3 font-bold text-sm disabled:opacity-60"
+              className="w-full rounded-xl py-3 font-bold text-sm"
               style={{ background: COLORS.accent, color: COLORS.accentText }}
             >
-              {submitting ? "רושם..." : "הירשם למשמרת הזו בלבד"}
+              הירשם למשמרת הזו בלבד
             </button>
             {!showRecurring ? (
               <button onClick={() => setShowRecurring(true)} className="w-full text-xs font-bold py-2" style={{ color: COLORS.accentText }}>
@@ -1011,11 +1048,11 @@ function ShiftModal({ shift, myName, onClose, onRegister, onRegisterRecurring, o
                 />
                 <button
                   onClick={handleRecurring}
-                  disabled={!recurEnd || submitting}
+                  disabled={!recurEnd}
                   className="w-full rounded-lg py-2.5 font-bold text-sm disabled:opacity-40"
                   style={{ background: COLORS.accent, color: COLORS.accentText }}
                 >
-                  {submitting ? "רושם..." : "אשר הרשמה קבועה"}
+                  אשר הרשמה קבועה
                 </button>
               </div>
             )}
@@ -1031,20 +1068,28 @@ function SettingsView({ templates: rawTemplates, onAdd, onDelete, onDone, onRese
   const [showForm, setShowForm] = useState(false);
   const [confirmingReset, setConfirmingReset] = useState(false);
   const [resetting, setResetting] = useState(false);
-  const [submitting, setSubmitting] = useState(false);
-  const [form, setForm] = useState({ label: "", dayOfWeek: 0, start: "20:00", end: "06:00", capacity: 2 });
+  const [form, setForm] = useState({ label: "", days: [0], start: "20:00", end: "06:00", capacity: 2 });
 
-  const submit = async () => {
-    if (!form.start || !form.end || form.capacity < 1) return;
-    setSubmitting(true);
-    try {
-      await onAdd({ ...form, capacity: Number(form.capacity) });
-      setForm({ label: "", dayOfWeek: 0, start: "20:00", end: "06:00", capacity: 2 });
-      setShowForm(false);
-      onDone();
-    } finally {
-      setSubmitting(false);
-    }
+  const toggleDay = (i) => {
+    setForm((f) => {
+      const has = f.days.includes(i);
+      return { ...f, days: has ? f.days.filter((d) => d !== i) : [...f.days, i].sort() };
+    });
+  };
+
+  const selectRange = (fromIdx, toIdx) => {
+    const range = [];
+    for (let i = fromIdx; i <= toIdx; i++) range.push(i);
+    setForm((f) => ({ ...f, days: range }));
+  };
+
+  const submit = () => {
+    if (!form.start || !form.end || form.capacity < 1 || form.days.length === 0) return;
+    const { days, ...base } = form;
+    onAdd({ ...base, capacity: Number(base.capacity) }, days); // fire-and-forget, UI reacts instantly
+    setForm({ label: "", days: [0], start: "20:00", end: "06:00", capacity: 2 });
+    setShowForm(false);
+    onDone();
   };
 
   const handleReset = async () => {
@@ -1071,10 +1116,27 @@ function SettingsView({ templates: rawTemplates, onAdd, onDelete, onDone, onRese
           <Field label="שם המשמרת (אופציונלי)">
             <input value={form.label} onChange={(e) => setForm({ ...form, label: e.target.value })} placeholder="לדוגמה: שמירה ראשית" className="w-full rounded-lg px-3 py-2 text-sm outline-none" style={{ background: COLORS.bg, border: `1px solid ${COLORS.border}`, color: COLORS.textPrimary }} />
           </Field>
-          <Field label="יום בשבוע">
-            <select value={form.dayOfWeek} onChange={(e) => setForm({ ...form, dayOfWeek: Number(e.target.value) })} className="w-full rounded-lg px-3 py-2 text-sm outline-none" style={{ background: COLORS.bg, border: `1px solid ${COLORS.border}`, color: COLORS.textPrimary }}>
-              {DAY_NAMES.map((d, i) => (<option key={i} value={i}>{d}</option>))}
-            </select>
+          <Field label="ימים (אפשר לבחור כמה, למשל ראשון עד חמישי)">
+            <div className="flex gap-1 flex-wrap">
+              {DAY_NAMES.map((d, i) => (
+                <button
+                  key={i}
+                  type="button"
+                  onClick={() => toggleDay(i)}
+                  className="w-9 h-9 rounded-lg text-xs font-bold"
+                  style={{
+                    background: form.days.includes(i) ? COLORS.accent : COLORS.bg,
+                    color: form.days.includes(i) ? COLORS.accentText : COLORS.textMuted,
+                    border: `1px solid ${form.days.includes(i) ? COLORS.accent : COLORS.border}`,
+                  }}
+                >
+                  {d.slice(0, 2)}
+                </button>
+              ))}
+            </div>
+            <button type="button" onClick={() => selectRange(0, 4)} className="text-[11px] font-bold mt-1.5" style={{ color: COLORS.accentText }}>
+              בחר ראשון-חמישי
+            </button>
           </Field>
           <div className="flex gap-3">
             <Field label="שעת התחלה">
@@ -1087,8 +1149,8 @@ function SettingsView({ templates: rawTemplates, onAdd, onDelete, onDone, onRese
           <Field label="מספר מקומות">
             <input type="number" min={1} value={form.capacity} onChange={(e) => setForm({ ...form, capacity: e.target.value })} className="w-full rounded-lg px-3 py-2 text-sm outline-none mono" style={{ background: COLORS.bg, border: `1px solid ${COLORS.border}`, color: COLORS.textPrimary }} />
           </Field>
-          <button onClick={submit} disabled={submitting} className="w-full rounded-lg py-2.5 font-bold text-sm mt-1 disabled:opacity-60" style={{ background: COLORS.accent, color: COLORS.accentText }}>
-            {submitting ? "שומר..." : "שמור משמרת"}
+          <button onClick={submit} disabled={form.days.length === 0} className="w-full rounded-lg py-2.5 font-bold text-sm mt-1 disabled:opacity-40" style={{ background: COLORS.accent, color: COLORS.accentText }}>
+            שמור משמרת{form.days.length > 1 ? ` (${form.days.length} ימים)` : ""}
           </button>
         </div>
       )}
