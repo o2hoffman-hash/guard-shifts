@@ -1,5 +1,5 @@
 import { initializeApp } from "firebase/app";
-import { initializeFirestore } from "firebase/firestore";
+import { getFirestore } from "firebase/firestore";
 
 // Firebase config values are safe to embed in client code - they identify
 // your project, they are not secret keys. Access control is enforced by
@@ -14,12 +14,4 @@ const firebaseConfig = {
 };
 
 const app = initializeApp(firebaseConfig);
-
-// Some networks (corporate proxies, security software) interfere with
-// Firestore's default streaming connection, causing writes to hang with
-// no visible error. Auto-detecting long-polling makes the connection more
-// resilient on those networks, at a small latency cost.
-export const db = initializeFirestore(app, {
-  experimentalAutoDetectLongPolling: true,
-});
-
+export const db = getFirestore(app);

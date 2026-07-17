@@ -13,18 +13,6 @@ import { db } from "./firebase";
 const STATE_REF = doc(db, "app", "state");
 const AUTH_KEY = "guard-shifts-auth-v1";
 const ADMIN_KEY = "guard-shifts-admin-v1";
-const WRITE_TIMEOUT_MS = 10000;
-
-// Firestore's write calls have no built-in timeout - on a network that
-// silently drops the connection, the returned promise can hang forever
-// with no error. This wraps any write so it always settles within
-// WRITE_TIMEOUT_MS, turning a permanent hang into a clear, catchable error.
-function withTimeout(promise, ms = WRITE_TIMEOUT_MS) {
-  return Promise.race([
-    promise,
-    new Promise((_, reject) => setTimeout(() => reject(new Error("timeout")), ms)),
-  ]);
-}
 
 const DAY_NAMES = ["ראשון", "שני", "שלישי", "רביעי", "חמישי", "שישי", "שבת"];
 const MONTH_NAMES = [
@@ -227,9 +215,9 @@ export default function App() {
       }
     } else {
       try {
-        await withTimeout(updateDoc(STATE_REF, { [`users.${name}`]: pin }));
+        await updateDoc(STATE_REF, { [`users.${name}`]: pin });
       } catch (e) {
-        setAuthError(e.message === "timeout" ? "החיבור לוקח יותר מדי זמן - נסה שוב" : "שגיאת חיבור - נסה שוב");
+        setAuthError("שגיאת חיבור - נסה שוב");
         return;
       }
     }
@@ -265,9 +253,9 @@ export default function App() {
     }
     if (!data.adminCode) {
       try {
-        await withTimeout(updateDoc(STATE_REF, { adminCode: code }));
+        await updateDoc(STATE_REF, { adminCode: code });
       } catch (e) {
-        setAdminError(e.message === "timeout" ? "החיבור לוקח יותר מדי זמן - נסה שוב" : "שגיאת חיבור - נסה שוב");
+        setAdminError("שגיאת חיבור - נסה שוב");
         return;
       }
       showToast("קוד ניהול הוגדר - שמור אותו!");
@@ -296,11 +284,11 @@ export default function App() {
       return;
     }
     try {
-      await withTimeout(updateDoc(STATE_REF, { [`registrations.${shift.id}`]: arrayUnion(myName) }));
+      await updateDoc(STATE_REF, { [`registrations.${shift.id}`]: arrayUnion(myName) });
       setSelectedShift((prev) => (prev ? { ...prev, _registered: [...list, myName] } : prev));
       showToast("נרשמת למשמרת");
     } catch (e) {
-      showToast(e.message === "timeout" ? "החיבור לוקח יותר מדי זמן - נסה שוב" : "שגיאה בשמירה - נסה שוב");
+      showToast("שגיאה בשמירה - נסה שוב");
     }
   };
 
@@ -308,11 +296,11 @@ export default function App() {
     if (!myName) return;
     const list = data.registrations[shift.id] || [];
     try {
-      await withTimeout(updateDoc(STATE_REF, { [`registrations.${shift.id}`]: arrayRemove(myName) }));
+      await updateDoc(STATE_REF, { [`registrations.${shift.id}`]: arrayRemove(myName) });
       setSelectedShift((prev) => (prev ? { ...prev, _registered: list.filter((n) => n !== myName) } : prev));
       showToast("ההרשמה בוטלה");
     } catch (e) {
-      showToast(e.message === "timeout" ? "החיבור לוקח יותר מדי זמן - נסה שוב" : "שגיאה בשמירה - נסה שוב");
+      showToast("שגיאה בשמירה - נסה שוב");
     }
   };
 
@@ -335,7 +323,7 @@ export default function App() {
     });
     try {
       if (Object.keys(updatePayload).length > 0) {
-        await withTimeout(updateDoc(STATE_REF, updatePayload));
+        await updateDoc(STATE_REF, updatePayload);
       }
       showToast(
         skipped > 0
@@ -343,33 +331,33 @@ export default function App() {
           : `נרשמת ל-${added} משמרות עד ${endDateStr.split("-").reverse().join("/")}`
       );
     } catch (e) {
-      showToast(e.message === "timeout" ? "החיבור לוקח יותר מדי זמן - נסה שוב" : "שגיאה בשמירה - נסה שוב");
+      showToast("שגיאה בשמירה - נסה שוב");
     }
     setSelectedShift(null);
   };
 
   const addTemplate = async (tpl) => {
     try {
-      await withTimeout(updateDoc(STATE_REF, { templates: arrayUnion({ ...tpl, id: uid() }) }));
+      await updateDoc(STATE_REF, { templates: arrayUnion({ ...tpl, id: uid() }) });
     } catch (e) {
-      showToast(e.message === "timeout" ? "החיבור לוקח יותר מדי זמן - נסה שוב" : "שגיאה בשמירה - נסה שוב");
+      showToast("שגיאה בשמירה - נסה שוב");
     }
   };
 
   const deleteTemplate = async (id) => {
     const filtered = data.templates.filter((t) => t.id !== id);
     try {
-      await withTimeout(updateDoc(STATE_REF, { templates: filtered }));
+      await updateDoc(STATE_REF, { templates: filtered });
     } catch (e) {
-      showToast(e.message === "timeout" ? "החיבור לוקח יותר מדי זמן - נסה שוב" : "שגיאה בשמירה - נסה שוב");
+      showToast("שגיאה בשמירה - נסה שוב");
     }
   };
 
   const updateInfo = async (nextInfo) => {
     try {
-      await withTimeout(updateDoc(STATE_REF, { info: nextInfo }));
+      await updateDoc(STATE_REF, { info: nextInfo });
     } catch (e) {
-      showToast(e.message === "timeout" ? "החיבור לוקח יותר מדי זמן - נסה שוב" : "שגיאה בשמירה - נסה שוב");
+      showToast("שגיאה בשמירה - נסה שוב");
     }
   };
 
