@@ -204,7 +204,6 @@ export default function App() {
         clearTimeout(loadTimeout);
         console.error(err);
         setLoadError("שגיאת חיבור למסד הנתונים - בדוק את החיבור לאינטרנט ונסה שוב.");
-        setLoading(false);
       }
     );
     return () => {
@@ -443,7 +442,10 @@ export default function App() {
           <div className="text-center max-w-xs">
             <p className="text-sm mb-4" style={{ color: COLORS.fullText }}>{loadError}</p>
             <button
-              onClick={() => window.location.reload()}
+              onClick={() => {
+                setLoadError(null);
+                setRefreshKey((k) => k + 1);
+              }}
               className="rounded-xl px-5 py-2.5 font-bold text-sm"
               style={{ background: COLORS.accent, color: COLORS.accentText }}
             >
