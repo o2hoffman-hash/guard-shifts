@@ -195,6 +195,7 @@ export default function App() {
             users: d.users || {},
             info: { ...DEFAULT_INFO, ...(d.info || {}) },
             adminCode: d.adminCode || "",
+            reports: d.reports || {},
           });
           setLoading(false);
         } else if (!snap.metadata.fromCache) {
@@ -210,7 +211,7 @@ export default function App() {
           // shifts disappearing on a second login - never repeat it.
           clearTimeout(loadTimeout);
           setLoadError(null);
-          const emptyDefaults = { templates: [], registrations: {}, users: {}, info: DEFAULT_INFO, adminCode: "" };
+          const emptyDefaults = { templates: [], registrations: {}, users: {}, info: DEFAULT_INFO, adminCode: "", reports: {} };
           setData(emptyDefaults);
           setDoc(STATE_REF, emptyDefaults).catch((e) => console.error("bootstrap write failed", e));
           setLoading(false);
@@ -323,9 +324,16 @@ export default function App() {
   const logout = () => {
     try {
       localStorage.removeItem(AUTH_KEY);
+      localStorage.removeItem(ADMIN_KEY);
     } catch (e) {}
     setPendingCreds(null);
     setMyName(null);
+    // Critical: admin unlock must not survive a personal logout. Without
+    // this, a second person logging in with their own name on the same
+    // device/tab would silently inherit admin visibility (including other
+    // people's private reports) without ever entering the admin code.
+    setIsAdmin(false);
+    setPendingAdminCode(null);
   };
 
   const requestAdmin = (afterSuccess) => {
@@ -488,6 +496,21 @@ export default function App() {
     }
   };
 
+  const addReport = async (shiftId, text) => {
+    if (!myName || !text.trim()) return;
+    const newReport = { id: uid(), author: myName, text: text.trim(), timestamp: Date.now() };
+    const prevData = data;
+    const list = data.reports[shiftId] || [];
+    setData({ ...data, reports: { ...data.reports, [shiftId]: [...list, newReport] } });
+    showToast("הדיווח נשלח");
+    try {
+      await withTimeout(updateDoc(STATE_REF, { [`reports.${shiftId}`]: arrayUnion(newReport) }));
+    } catch (e) {
+      setData(prevData);
+      showToast(e.message === "timeout" ? "החיבור לוקח יותר מדי זמן - הדיווח לא נשמר, נסה שוב" : "שגיאה בשמירה - נסה שוב");
+    }
+  };
+
   if (loading || pendingCreds === undefined) {
     return (
       <div style={{ background: COLORS.bg, color: COLORS.textMuted }} className="min-h-screen flex items-center justify-center p-6">
@@ -558,10 +581,13 @@ export default function App() {
         <ShiftModal
           shift={selectedShift}
           myName={myName}
+          isAdmin={isAdmin}
+          reports={data.reports[selectedShift.id] || []}
           onClose={() => setSelectedShift(null)}
           onRegister={register}
           onRegisterRecurring={registerRecurring}
           onUnregister={unregister}
+          onAddReport={addReport}
         />
       )}
 
@@ -817,10 +843,9 @@ function ShiftBlock({ shift, registered, onSelect }) {
 
   return (
     <button
-      onClick={() => !past && onSelect(shift)}
-      disabled={past}
-      className="w-full text-right rounded-xl p-3 flex flex-col gap-2 transition-transform active:scale-[0.98] disabled:active:scale-100"
-      style={{ background: past ? COLORS.surfaceRaised : `${tone}33`, border: `1px solid ${tone}`, borderInlineStart: `4px solid ${tone}`, opacity: past ? 0.65 : 1 }}
+      onClick={() => onSelect(shift)}
+      className="w-full text-right rounded-xl p-3 flex flex-col gap-2 transition-transform active:scale-[0.98]"
+      style={{ background: past ? COLORS.surfaceRaised : `${tone}33`, border: `1px solid ${tone}`, borderInlineStart: `4px solid ${tone}`, opacity: past ? 0.75 : 1 }}
     >
       <div className="flex items-center gap-3">
         <div className="flex-1 min-w-0">
@@ -990,15 +1015,18 @@ function MyShiftsView({ data, myName, onSelect }) {
   );
 }
 
-function ShiftModal({ shift, myName, onClose, onRegister, onRegisterRecurring, onUnregister }) {
+function ShiftModal({ shift, myName, isAdmin, reports, onClose, onRegister, onRegisterRecurring, onUnregister, onAddReport }) {
   const [showRecurring, setShowRecurring] = useState(false);
   const [recurEnd, setRecurEnd] = useState("");
+  const [reportText, setReportText] = useState("");
   const registered = shift._registered || [];
   const taken = registered.length;
   const isFull = taken >= shift.capacity;
   const iAmIn = registered.includes(myName);
   const dateObj = new Date(shift.date + "T00:00:00");
   const past = isPastDate(dateObj);
+
+  const visibleReports = (reports || []).filter((r) => isAdmin || r.author === myName);
 
   const handleRegister = () => {
     onRegister(shift);
@@ -1011,6 +1039,11 @@ function ShiftModal({ shift, myName, onClose, onRegister, onRegisterRecurring, o
   const handleRecurring = () => {
     onRegisterRecurring(shift, recurEnd);
     onClose();
+  };
+  const handleSubmitReport = () => {
+    if (!reportText.trim()) return;
+    onAddReport(shift.id, reportText);
+    setReportText("");
   };
 
   return (
@@ -1098,6 +1131,44 @@ function ShiftModal({ shift, myName, onClose, onRegister, onRegisterRecurring, o
             )}
           </div>
         )}
+
+        <div className="mt-5 pt-4" style={{ borderTop: `1px solid ${COLORS.border}` }}>
+          <h3 className="text-xs font-bold mb-2" style={{ color: COLORS.textMuted }}>דיווח מהמשמרת</h3>
+
+          {visibleReports.length > 0 && (
+            <ul className="space-y-2 mb-3">
+              {visibleReports.map((r) => (
+                <li key={r.id} className="rounded-lg px-3 py-2 text-sm" style={{ background: COLORS.surfaceRaised }}>
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="font-bold text-xs" style={{ color: COLORS.accentText }}>{r.author}</span>
+                    <span className="text-[10px] mono" style={{ color: COLORS.textMuted }}>
+                      {new Date(r.timestamp).toLocaleDateString("he-IL")} {new Date(r.timestamp).toLocaleTimeString("he-IL", { hour: "2-digit", minute: "2-digit" })}
+                    </span>
+                  </div>
+                  <p className="whitespace-pre-wrap" style={{ color: COLORS.textPrimary }}>{r.text}</p>
+                </li>
+              ))}
+            </ul>
+          )}
+
+          <textarea
+            value={reportText}
+            onChange={(e) => setReportText(e.target.value)}
+            placeholder="דגשים, הערות או ממצאים מהשמירה..."
+            rows={3}
+            className="w-full rounded-lg px-3 py-2 text-sm outline-none mb-2"
+            style={{ background: COLORS.bg, border: `1px solid ${COLORS.border}`, color: COLORS.textPrimary }}
+          />
+          <button
+            onClick={handleSubmitReport}
+            disabled={!reportText.trim()}
+            className="w-full rounded-lg py-2 font-bold text-sm disabled:opacity-40"
+            style={{ background: COLORS.surfaceRaised, color: COLORS.accentText, border: `1px solid ${COLORS.accent}` }}
+          >
+            שלח דיווח
+          </button>
+          <p className="text-[10px] mt-1.5" style={{ color: COLORS.textMuted }}>הדיווח גלוי רק לך ולמנהל.</p>
+        </div>
       </div>
     </div>
   );
