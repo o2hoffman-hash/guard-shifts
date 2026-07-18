@@ -195,7 +195,7 @@ export default function App() {
             users: d.users || {},
             info: { ...DEFAULT_INFO, ...(d.info || {}) },
             adminCode: d.adminCode || "",
-            reports: d.reports || {},
+            reports: Array.isArray(d.reports) ? d.reports : [],
           });
           setLoading(false);
         } else if (!snap.metadata.fromCache) {
@@ -211,7 +211,7 @@ export default function App() {
           // shifts disappearing on a second login - never repeat it.
           clearTimeout(loadTimeout);
           setLoadError(null);
-          const emptyDefaults = { templates: [], registrations: {}, users: {}, info: DEFAULT_INFO, adminCode: "", reports: {} };
+          const emptyDefaults = { templates: [], registrations: {}, users: {}, info: DEFAULT_INFO, adminCode: "", reports: [] };
           setData(emptyDefaults);
           setDoc(STATE_REF, emptyDefaults).catch((e) => console.error("bootstrap write failed", e));
           setLoading(false);
@@ -496,15 +496,14 @@ export default function App() {
     }
   };
 
-  const addReport = async (shiftId, text) => {
+  const addReport = async (text) => {
     if (!myName || !text.trim()) return;
     const newReport = { id: uid(), author: myName, text: text.trim(), timestamp: Date.now() };
     const prevData = data;
-    const list = data.reports[shiftId] || [];
-    setData({ ...data, reports: { ...data.reports, [shiftId]: [...list, newReport] } });
+    setData({ ...data, reports: [...data.reports, newReport] });
     showToast("הדיווח נשלח");
     try {
-      await withTimeout(updateDoc(STATE_REF, { [`reports.${shiftId}`]: arrayUnion(newReport) }));
+      await withTimeout(updateDoc(STATE_REF, { reports: arrayUnion(newReport) }));
     } catch (e) {
       setData(prevData);
       showToast(e.message === "timeout" ? "החיבור לוקח יותר מדי זמן - הדיווח לא נשמר, נסה שוב" : "שגיאה בשמירה - נסה שוב");
@@ -570,6 +569,7 @@ export default function App() {
           {view === "mine" && (
             <MyShiftsView data={data} myName={myName} onSelect={(shift) => setSelectedShift({ ...shift, _registered: data.registrations[shift.id] || [] })} />
           )}
+          {view === "reports" && <ReportsView reports={data.reports} myName={myName} isAdmin={isAdmin} onAdd={addReport} />}
           {view === "info" && <GuidelinesView info={data.info} onSave={updateInfo} isAdmin={isAdmin} requestAdmin={requestAdmin} />}
           {view === "settings" && (
             <SettingsView templates={data.templates} onAdd={addTemplates} onDelete={deleteTemplate} onDone={() => setView("calendar")} onResetRegistrations={resetRegistrations} />
@@ -581,13 +581,10 @@ export default function App() {
         <ShiftModal
           shift={selectedShift}
           myName={myName}
-          isAdmin={isAdmin}
-          reports={data.reports[selectedShift.id] || []}
           onClose={() => setSelectedShift(null)}
           onRegister={register}
           onRegisterRecurring={registerRecurring}
           onUnregister={unregister}
-          onAddReport={addReport}
         />
       )}
 
@@ -707,7 +704,8 @@ function Header({ myName, onLogout, onRefresh }) {
 function TopTabs({ view, setView, isAdmin, requestAdmin }) {
   const tabs = [
     { id: "calendar", label: "יומן" },
-    { id: "mine", label: "השמירות שלי" },
+    { id: "mine", label: "שלי" },
+    { id: "reports", label: "דיווחים" },
     { id: "info", label: "הנחיות" },
     { id: "settings", label: "ניהול" },
   ];
@@ -1015,18 +1013,74 @@ function MyShiftsView({ data, myName, onSelect }) {
   );
 }
 
-function ShiftModal({ shift, myName, isAdmin, reports, onClose, onRegister, onRegisterRecurring, onUnregister, onAddReport }) {
+function ReportsView({ reports, myName, isAdmin, onAdd }) {
+  const [text, setText] = useState("");
+
+  const visible = (reports || [])
+    .filter((r) => isAdmin || r.author === myName)
+    .slice()
+    .sort((a, b) => b.timestamp - a.timestamp);
+
+  const submit = () => {
+    if (!text.trim()) return;
+    onAdd(text);
+    setText("");
+  };
+
+  return (
+    <div>
+      <h2 className="font-extrabold text-base mb-3">דיווח חדש</h2>
+      <div className="rounded-xl p-4 mb-6" style={{ background: COLORS.surface, border: `1px solid ${COLORS.border}` }}>
+        <textarea
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          placeholder="דגשים, הערות או ממצאים מהשמירה..."
+          rows={4}
+          className="w-full rounded-lg px-3 py-2 text-sm outline-none mb-2"
+          style={{ background: COLORS.bg, border: `1px solid ${COLORS.border}`, color: COLORS.textPrimary }}
+        />
+        <button
+          onClick={submit}
+          disabled={!text.trim()}
+          className="w-full rounded-lg py-2.5 font-bold text-sm disabled:opacity-40"
+          style={{ background: COLORS.accent, color: COLORS.accentText }}
+        >
+          שלח דיווח
+        </button>
+        <p className="text-[10px] mt-1.5" style={{ color: COLORS.textMuted }}>הדיווח גלוי רק לך ולמנהל.</p>
+      </div>
+
+      <h2 className="font-extrabold text-base mb-3">{isAdmin ? "כל הדיווחים" : "הדיווחים שלי"}</h2>
+      {visible.length === 0 ? (
+        <p className="text-sm text-center py-8" style={{ color: COLORS.textMuted }}>עדיין אין דיווחים</p>
+      ) : (
+        <ul className="space-y-2">
+          {visible.map((r) => (
+            <li key={r.id} className="rounded-xl px-4 py-3" style={{ background: COLORS.surfaceRaised, border: `1px solid ${COLORS.border}` }}>
+              <div className="flex items-center justify-between mb-1.5">
+                <span className="font-bold text-xs" style={{ color: COLORS.accentText }}>{r.author}</span>
+                <span className="text-[10px] mono" style={{ color: COLORS.textMuted }}>
+                  {new Date(r.timestamp).toLocaleDateString("he-IL")} {new Date(r.timestamp).toLocaleTimeString("he-IL", { hour: "2-digit", minute: "2-digit" })}
+                </span>
+              </div>
+              <p className="text-sm whitespace-pre-wrap" style={{ color: COLORS.textPrimary }}>{r.text}</p>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+function ShiftModal({ shift, myName, onClose, onRegister, onRegisterRecurring, onUnregister }) {
   const [showRecurring, setShowRecurring] = useState(false);
   const [recurEnd, setRecurEnd] = useState("");
-  const [reportText, setReportText] = useState("");
   const registered = shift._registered || [];
   const taken = registered.length;
   const isFull = taken >= shift.capacity;
   const iAmIn = registered.includes(myName);
   const dateObj = new Date(shift.date + "T00:00:00");
   const past = isPastDate(dateObj);
-
-  const visibleReports = (reports || []).filter((r) => isAdmin || r.author === myName);
 
   const handleRegister = () => {
     onRegister(shift);
@@ -1039,11 +1093,6 @@ function ShiftModal({ shift, myName, isAdmin, reports, onClose, onRegister, onRe
   const handleRecurring = () => {
     onRegisterRecurring(shift, recurEnd);
     onClose();
-  };
-  const handleSubmitReport = () => {
-    if (!reportText.trim()) return;
-    onAddReport(shift.id, reportText);
-    setReportText("");
   };
 
   return (
@@ -1131,44 +1180,6 @@ function ShiftModal({ shift, myName, isAdmin, reports, onClose, onRegister, onRe
             )}
           </div>
         )}
-
-        <div className="mt-5 pt-4" style={{ borderTop: `1px solid ${COLORS.border}` }}>
-          <h3 className="text-xs font-bold mb-2" style={{ color: COLORS.textMuted }}>דיווח מהמשמרת</h3>
-
-          {visibleReports.length > 0 && (
-            <ul className="space-y-2 mb-3">
-              {visibleReports.map((r) => (
-                <li key={r.id} className="rounded-lg px-3 py-2 text-sm" style={{ background: COLORS.surfaceRaised }}>
-                  <div className="flex items-center justify-between mb-1">
-                    <span className="font-bold text-xs" style={{ color: COLORS.accentText }}>{r.author}</span>
-                    <span className="text-[10px] mono" style={{ color: COLORS.textMuted }}>
-                      {new Date(r.timestamp).toLocaleDateString("he-IL")} {new Date(r.timestamp).toLocaleTimeString("he-IL", { hour: "2-digit", minute: "2-digit" })}
-                    </span>
-                  </div>
-                  <p className="whitespace-pre-wrap" style={{ color: COLORS.textPrimary }}>{r.text}</p>
-                </li>
-              ))}
-            </ul>
-          )}
-
-          <textarea
-            value={reportText}
-            onChange={(e) => setReportText(e.target.value)}
-            placeholder="דגשים, הערות או ממצאים מהשמירה..."
-            rows={3}
-            className="w-full rounded-lg px-3 py-2 text-sm outline-none mb-2"
-            style={{ background: COLORS.bg, border: `1px solid ${COLORS.border}`, color: COLORS.textPrimary }}
-          />
-          <button
-            onClick={handleSubmitReport}
-            disabled={!reportText.trim()}
-            className="w-full rounded-lg py-2 font-bold text-sm disabled:opacity-40"
-            style={{ background: COLORS.surfaceRaised, color: COLORS.accentText, border: `1px solid ${COLORS.accent}` }}
-          >
-            שלח דיווח
-          </button>
-          <p className="text-[10px] mt-1.5" style={{ color: COLORS.textMuted }}>הדיווח גלוי רק לך ולמנהל.</p>
-        </div>
       </div>
     </div>
   );
